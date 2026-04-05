@@ -1,0 +1,4 @@
+voxad
+*.o
+*.swp
+.DS_Store

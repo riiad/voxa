@@ -1,0 +1,11 @@
+# Voxa key binding configuration
+#
+# For modifier-only push-to-talk (hold to record, release to stop):
+#   right_cmd, left_cmd, right_shift, left_shift,
+#   right_ctrl, left_ctrl, right_alt/right_option, left_alt/left_option
+#
+# For key combos:
+#   key = space, a-z, 0-9, f1-f20, return, tab, escape, delete
+#   modifiers = ctrl, shift, alt/option, cmd/command (comma-separated)
+
+key = right_cmd
