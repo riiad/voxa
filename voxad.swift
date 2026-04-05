@@ -68,6 +68,7 @@ func loadConfig() -> KeyMode {
                     mods = v.components(separatedBy: ",")
                         .map { $0.trimmingCharacters(in: .whitespaces) }
                         .filter { !$0.isEmpty }
+                case "language", "model": break // handled by voxa.sh
                 default:
                     print("voxa: warning: unknown config key '\(k)' on line \(lineNum + 1)")
                 }
@@ -106,23 +107,252 @@ func loadConfig() -> KeyMode {
     return .keyCombo(keyCode: code, modifiers: flags)
 }
 
-// MARK: - Daemon
+// MARK: - Recording Overlay
 
-let voxaDir: String = URL(fileURLWithPath: CommandLine.arguments[0])
+class RecordingOverlay {
+    private var window: NSWindow?
+    private var pulseTimer: Timer?
+    private var dotView: NSView?
+
+    func show() {
+        guard let screen = NSScreen.main else { return }
+
+        let width: CGFloat = 120
+        let height: CGFloat = 32
+        let frame = NSRect(
+            x: screen.frame.midX - width / 2,
+            y: screen.frame.maxY - height - 60,
+            width: width,
+            height: height
+        )
+
+        let win = NSWindow(
+            contentRect: frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        win.level = .statusBar
+        win.backgroundColor = .clear
+        win.isOpaque = false
+        win.hasShadow = true
+        win.ignoresMouseEvents = true
+        win.collectionBehavior = [.canJoinAllSpaces, .stationary]
+
+        let pill = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        pill.wantsLayer = true
+        pill.layer?.cornerRadius = height / 2
+        pill.layer?.backgroundColor = NSColor.black.cgColor
+
+        // Red dot
+        let dotSize: CGFloat = 10
+        let dot = NSView(frame: NSRect(x: 12, y: (height - dotSize) / 2, width: dotSize, height: dotSize))
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = dotSize / 2
+        dot.layer?.backgroundColor = NSColor.systemRed.cgColor
+        pill.addSubview(dot)
+
+        // Label
+        let label = NSTextField(labelWithString: "Recording")
+        label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .white
+        label.frame = NSRect(x: 28, y: (height - 16) / 2, width: 80, height: 16)
+        pill.addSubview(label)
+
+        win.contentView = pill
+        self.dotView = dot
+
+        win.orderFrontRegardless()
+        self.window = win
+
+        // Pulse animation on the red dot
+        var bright = true
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.dotView?.layer?.backgroundColor = bright
+                    ? NSColor.systemRed.withAlphaComponent(0.3).cgColor
+                    : NSColor.systemRed.cgColor
+                bright = !bright
+            }
+        }
+    }
+
+    func hide() {
+        pulseTimer?.invalidate()
+        pulseTimer = nil
+        window?.orderOut(nil)
+        window = nil
+        dotView = nil
+    }
+}
+
+// MARK: - App Delegate
+
+class VoxaDelegate: NSObject, NSApplicationDelegate {
+    let mode: KeyMode
+    let voxaScript: String
+    let overlay = RecordingOverlay()
+    var isRecording = false
+    let processLock = NSLock()
+    var globalTap: CFMachPort?
+
+    init(mode: KeyMode, voxaScript: String) {
+        self.mode = mode
+        self.voxaScript = voxaScript
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setupEventTap()
+        setupSignalHandlers()
+    }
+
+    // MARK: - Signal handling
+
+    func setupSignalHandlers() {
+        let handler: @convention(c) (Int32) -> Void = { _ in
+            let delegate = NSApplication.shared.delegate as? VoxaDelegate
+            delegate?.cleanup()
+            exit(0)
+        }
+        signal(SIGINT, handler)
+        signal(SIGTERM, handler)
+    }
+
+    func cleanup() {
+        if isRecording {
+            print("\nvoxa: cleaning up...")
+            DispatchQueue.main.async { self.overlay.hide() }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = [voxaScript, "stop"]
+            try? process.run()
+            process.waitUntilExit()
+        }
+    }
+
+    // MARK: - Process management
+
+    func runVoxa(_ action: String) {
+        processLock.lock()
+        defer { processLock.unlock() }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [voxaScript, action]
+        do {
+            try process.run()
+        } catch {
+            print("voxa: error launching \(action): \(error.localizedDescription)")
+            isRecording = false
+            DispatchQueue.main.async { self.overlay.hide() }
+        }
+    }
+
+    func handleStart() {
+        isRecording = true
+        DispatchQueue.main.async { self.overlay.show() }
+        DispatchQueue.global().async { self.runVoxa("start") }
+    }
+
+    func handleStop() {
+        isRecording = false
+        DispatchQueue.main.async { self.overlay.hide() }
+        DispatchQueue.global().async { self.runVoxa("stop") }
+    }
+
+    // MARK: - Event tap
+
+    func setupEventTap() {
+        let eventMask = (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.flagsChanged.rawValue)
+
+        // Store self in a pointer for the C callback
+        let refcon = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+
+        guard let eventTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(eventMask),
+            callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
+                guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
+                let delegate = Unmanaged<VoxaDelegate>.fromOpaque(refcon).takeUnretainedValue()
+                return delegate.handleEvent(proxy: proxy, type: type, event: event)
+            },
+            userInfo: refcon
+        ) else {
+            print("voxa: failed to create event tap. Grant Accessibility permission in System Settings.")
+            exit(1)
+        }
+
+        globalTap = eventTap
+
+        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+    }
+
+    func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap = globalTap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        let rawFlags = event.flags.rawValue
+
+        switch mode {
+        case .modifierOnly(let deviceFlag, _):
+            guard type == .flagsChanged else {
+                return Unmanaged.passUnretained(event)
+            }
+
+            let isPressed = (rawFlags & deviceFlag) != 0
+
+            if isPressed && !isRecording {
+                handleStart()
+            } else if !isPressed && isRecording {
+                handleStop()
+            }
+
+            return Unmanaged.passUnretained(event)
+
+        case .keyCombo(let keyCode, let requiredMods):
+            let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+            guard eventKeyCode == keyCode else {
+                return Unmanaged.passUnretained(event)
+            }
+
+            let relevantFlags = event.flags.intersection([.maskControl, .maskShift, .maskAlternate, .maskCommand])
+            guard relevantFlags.contains(requiredMods) else {
+                return Unmanaged.passUnretained(event)
+            }
+
+            if type == .keyDown && !isRecording {
+                handleStart()
+            } else if type == .keyUp && isRecording {
+                handleStop()
+            }
+
+            return nil
+        }
+    }
+}
+
+// MARK: - Main
+
+let voxaDir = URL(fileURLWithPath: CommandLine.arguments[0])
     .deletingLastPathComponent().path
-
-let mode = loadConfig()
-var isRecording = false
-var activeProcess: Process?
-let processLock = NSLock()
-var globalTap: CFMachPort?
-
-// Validate voxa.sh exists at startup
 let voxaScript = "\(voxaDir)/voxa.sh"
+
 guard FileManager.default.isExecutableFile(atPath: voxaScript) else {
     print("voxa: error: voxa.sh not found at \(voxaScript)")
     exit(1)
 }
+
+let mode = loadConfig()
 
 switch mode {
 case .modifierOnly(_, let name):
@@ -132,121 +362,8 @@ case .keyCombo(let keyCode, let modifiers):
 }
 print("voxa: press Ctrl+C to quit")
 
-// MARK: - Signal handling
-
-func cleanup() {
-    // Stop any active recording on shutdown
-    if isRecording {
-        print("\nvoxa: cleaning up...")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [voxaScript, "stop"]
-        try? process.run()
-        process.waitUntilExit()
-    }
-}
-
-signal(SIGINT) { _ in
-    cleanup()
-    exit(0)
-}
-signal(SIGTERM) { _ in
-    cleanup()
-    exit(0)
-}
-
-// MARK: - Process management
-
-func runVoxa(_ action: String) {
-    processLock.lock()
-    defer { processLock.unlock() }
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/bin/bash")
-    process.arguments = [voxaScript, action]
-    do {
-        try process.run()
-    } catch {
-        print("voxa: error launching \(action): \(error.localizedDescription)")
-        isRecording = false
-    }
-}
-
-// MARK: - Event tap callback
-
-func eventCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        if let tap = globalTap {
-            CGEvent.tapEnable(tap: tap, enable: true)
-        }
-        return Unmanaged.passUnretained(event)
-    }
-
-    let rawFlags = event.flags.rawValue
-
-    switch mode {
-    case .modifierOnly(let deviceFlag, _):
-        guard type == .flagsChanged else {
-            return Unmanaged.passUnretained(event)
-        }
-
-        let isPressed = (rawFlags & deviceFlag) != 0
-
-        if isPressed && !isRecording {
-            isRecording = true
-            DispatchQueue.global().async { runVoxa("start") }
-        } else if !isPressed && isRecording {
-            isRecording = false
-            DispatchQueue.global().async { runVoxa("stop") }
-        }
-
-        return Unmanaged.passUnretained(event)
-
-    case .keyCombo(let keyCode, let requiredMods):
-        let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        guard eventKeyCode == keyCode else {
-            return Unmanaged.passUnretained(event)
-        }
-
-        let relevantFlags = event.flags.intersection([.maskControl, .maskShift, .maskAlternate, .maskCommand])
-        guard relevantFlags.contains(requiredMods) else {
-            return Unmanaged.passUnretained(event)
-        }
-
-        if type == .keyDown && !isRecording {
-            isRecording = true
-            DispatchQueue.global().async { runVoxa("start") }
-        } else if type == .keyUp && isRecording {
-            isRecording = false
-            DispatchQueue.global().async { runVoxa("stop") }
-        }
-
-        return nil
-    }
-}
-
-// MARK: - Event tap setup (single tap)
-
-let eventMask = (1 << CGEventType.keyDown.rawValue)
-    | (1 << CGEventType.keyUp.rawValue)
-    | (1 << CGEventType.flagsChanged.rawValue)
-
-guard let eventTap = CGEvent.tapCreate(
-    tap: .cgSessionEventTap,
-    place: .headInsertEventTap,
-    options: .defaultTap,
-    eventsOfInterest: CGEventMask(eventMask),
-    callback: eventCallback,
-    userInfo: nil
-) else {
-    print("voxa: failed to create event tap. Grant Accessibility permission in System Settings.")
-    exit(1)
-}
-
-globalTap = eventTap
-
-let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
-CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
-CGEvent.tapEnable(tap: eventTap, enable: true)
-
-CFRunLoopRun()
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory) // No dock icon
+let delegate = VoxaDelegate(mode: mode, voxaScript: voxaScript)
+app.delegate = delegate
+app.run()
