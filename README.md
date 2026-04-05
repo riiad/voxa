@@ -10,6 +10,7 @@ Hold a key, speak, release — your words are transcribed and pasted into the ac
 - **100% local** — no cloud, no API, no account, no cost
 - **Auto-paste** — transcribed text is copied to clipboard and pasted automatically
 - **Recording indicator** — Dynamic Island-style overlay with pulsing red dot
+- **Auto-start** — launches automatically at login via LaunchAgent
 - **Fast** — uses whisper.cpp with Metal acceleration on Apple Silicon
 - **French by default** — optimized for French, configurable for any language
 
@@ -30,22 +31,29 @@ chmod +x setup.sh
 The setup script will:
 1. Install `ffmpeg` and `whisper-cpp` via Homebrew
 2. Download the Whisper `small` model (~466 MB)
-3. Compile the `voxad` daemon
-4. Create a default config at `~/.voxa/config`
+3. Build the `Voxa.app` bundle
+4. Install a LaunchAgent for auto-start at login
 
-Then grant permissions in **System Settings > Privacy & Security**:
-- **Accessibility** — allow `voxad`
-- **Microphone** — allow your terminal app
+On first launch, grant permissions in **System Settings > Privacy & Security**:
+- **Accessibility** — allow Voxa
+- **Microphone** — allow Voxa (popup on first use)
 
 ## Usage
 
-Start the daemon:
+Hold **Right Cmd** to record, release to transcribe and auto-paste.
+
+### Managing the daemon
 
 ```bash
-./voxad
-```
+# Stop
+launchctl bootout gui/$(id -u)/com.voxa.daemon
 
-Hold **Right Cmd** to record, release to transcribe and auto-paste.
+# Start
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.voxa.daemon.plist
+
+# Or launch manually
+open ~/Code/voxa/Voxa.app
+```
 
 ## Configuration
 
@@ -72,18 +80,27 @@ key = space
 modifiers = ctrl, shift
 ```
 
-Restart `voxad` after changing the config.
+Restart Voxa after changing the config.
 
 ## How it works
 
 ```
-voxad (Swift daemon)
+Voxa.app (Swift daemon)
   ├── detects key press → voxa.sh start
   │     └── ffmpeg records mic → ~/.voxa/tmp/recording.wav
   ├── detects key release → voxa.sh stop
   │     └── whisper-cli transcribes → pbcopy → auto-paste
   └── shows/hides recording overlay
 ```
+
+## Uninstall
+
+```bash
+chmod +x uninstall.sh
+./uninstall.sh
+```
+
+This stops the daemon, removes the LaunchAgent, and cleans up `~/.voxa`. The source code is not deleted.
 
 ## License
 
