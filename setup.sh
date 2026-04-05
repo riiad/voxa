@@ -70,10 +70,36 @@ fi
 # Create tmp directory
 mkdir -p "$CONFIG_DIR/tmp"
 
-# Compile voxad
+# Build Voxa.app bundle
 echo ""
-echo "--- Compiling voxad ---"
-if swiftc -O -o "$VOXA_DIR/voxad" "$VOXA_DIR/voxad.swift" -framework Cocoa -framework Carbon 2>&1; then
+echo "--- Building Voxa.app ---"
+APP_DIR="$VOXA_DIR/Voxa.app"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+
+cat > "$APP_DIR/Contents/Info.plist" <<INFOPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.voxa.daemon</string>
+    <key>CFBundleName</key>
+    <string>Voxa</string>
+    <key>CFBundleExecutable</key>
+    <string>voxad</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Voxa needs microphone access to record speech for transcription.</string>
+</dict>
+</plist>
+INFOPLIST
+
+if swiftc -O -o "$APP_DIR/Contents/MacOS/voxad" "$VOXA_DIR/voxad.swift" -framework Cocoa -framework Carbon 2>&1; then
     echo "Compiled voxad"
 else
     echo "ERROR: Compilation failed. Make sure Xcode Command Line Tools are installed:"
@@ -81,19 +107,62 @@ else
     exit 1
 fi
 
+ln -sf "$VOXA_DIR/voxa.sh" "$APP_DIR/Contents/MacOS/voxa.sh"
+
 # Make scripts executable
 chmod +x "$VOXA_DIR/voxa.sh"
+
+# Install LaunchAgent
+echo ""
+echo "--- LaunchAgent ---"
+PLIST_NAME="com.voxa.daemon.plist"
+PLIST_DIR="$HOME/Library/LaunchAgents"
+PLIST_PATH="$PLIST_DIR/$PLIST_NAME"
+mkdir -p "$PLIST_DIR"
+
+# Stop existing service if running
+launchctl bootout "gui/$(id -u)/com.voxa.daemon" 2>/dev/null || true
+pkill -f "Voxa.app" 2>/dev/null || true
+
+cat > "$PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.voxa.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/open</string>
+        <string>-W</string>
+        <string>-a</string>
+        <string>$APP_DIR</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+
+launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
+echo "LaunchAgent installed and started"
 
 echo ""
 echo "=== Setup Complete ==="
 echo ""
-echo "IMPORTANT: Grant Accessibility permission to voxad in:"
-echo "  System Settings > Privacy & Security > Accessibility"
-echo "  Also grant Microphone permission to Terminal/iTerm."
+echo "Voxa will now start automatically at login."
 echo ""
-echo "To start voxa daemon:"
-echo "  $VOXA_DIR/voxad"
+echo "IMPORTANT: On first launch, grant these permissions in System Settings:"
+echo "  1. Privacy & Security > Accessibility: allow Voxa"
+echo "  2. Privacy & Security > Microphone: allow Voxa (popup on first use)"
 echo ""
-echo "To configure the key binding, edit: ~/.voxa/config"
+echo "Commands:"
+echo "  Stop:    launchctl bootout gui/\$(id -u)/com.voxa.daemon"
+echo "  Start:   launchctl bootstrap gui/\$(id -u) $PLIST_PATH"
+echo "  Manual:  open $APP_DIR"
+echo ""
+echo "Config: ~/.voxa/config"
 echo ""
 echo "Usage: Hold Right Cmd to record, release to transcribe and paste."

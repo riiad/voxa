@@ -2,6 +2,7 @@
 set -uo pipefail
 export LANG="en_US.UTF-8"
 export LC_ALL="en_US.UTF-8"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 VOXA_TMP="$HOME/.voxa/tmp"
 mkdir -p "$VOXA_TMP"
