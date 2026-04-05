@@ -9,8 +9,9 @@ Hold a key, speak, release — your words are transcribed and pasted into the ac
 - **Push-to-talk** — hold Right Cmd (configurable) to record, release to transcribe
 - **100% local** — no cloud, no API, no account, no cost
 - **Auto-paste** — transcribed text is copied to clipboard and pasted automatically
+- **Recording indicator** — Dynamic Island-style overlay with pulsing red dot
 - **Fast** — uses whisper.cpp with Metal acceleration on Apple Silicon
-- **French by default** — optimized for French, works with any Whisper-supported language
+- **French by default** — optimized for French, configurable for any language
 
 ## Requirements
 
@@ -51,14 +52,20 @@ Hold **Right Cmd** to record, release to transcribe and auto-paste.
 Edit `~/.voxa/config`:
 
 ```
-# Modifier-only keys (push-to-talk):
-#   right_cmd, left_cmd, right_shift, left_shift,
-#   right_ctrl, left_ctrl, right_alt, left_alt
-
+# Push-to-talk key
 key = right_cmd
+
+# Whisper settings
+language = fr
+# model = ggml-small.bin
 ```
 
-Key combos are also supported:
+### Key binding options
+
+Modifier-only keys (push-to-talk):
+`right_cmd`, `left_cmd`, `right_shift`, `left_shift`, `right_ctrl`, `left_ctrl`, `right_alt`, `left_alt`
+
+Key combos:
 
 ```
 key = space
@@ -71,10 +78,11 @@ Restart `voxad` after changing the config.
 
 ```
 voxad (Swift daemon)
-  └── detects key press → voxa.sh start
-        └── ffmpeg records mic → /tmp/voxa_recording.wav
-  └── detects key release → voxa.sh stop
-        └── whisper-cli transcribes → pbcopy → auto-paste
+  ├── detects key press → voxa.sh start
+  │     └── ffmpeg records mic → ~/.voxa/tmp/recording.wav
+  ├── detects key release → voxa.sh stop
+  │     └── whisper-cli transcribes → pbcopy → auto-paste
+  └── shows/hides recording overlay
 ```
 
 ## License
