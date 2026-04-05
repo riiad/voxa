@@ -59,12 +59,6 @@ echo "Compiled voxad"
 # Make scripts executable
 chmod +x "$VOXA_DIR/voxa.sh"
 
-# Remove old skhd config if present
-if [ -f "$HOME/.skhdrc" ] && grep -q "voxa" "$HOME/.skhdrc"; then
-    sed -i '' '/voxa/d' "$HOME/.skhdrc"
-    echo "Removed old voxa shortcut from .skhdrc"
-fi
-
 echo ""
 echo "=== Setup Complete ==="
 echo ""
@@ -77,4 +71,4 @@ echo "  $VOXA_DIR/voxad"
 echo ""
 echo "To configure the key binding, edit: ~/.voxa/config"
 echo ""
-echo "Usage: Hold Ctrl+Shift+Space to record, release to transcribe and paste."
+echo "Usage: Hold Right Cmd to record, release to transcribe and paste."
