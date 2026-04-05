@@ -9,6 +9,12 @@ MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL_NAME
 
 echo "=== Voxa Setup ==="
 
+# Pre-flight checks
+if ! command -v brew &>/dev/null; then
+    echo "ERROR: Homebrew is required. Install it from https://brew.sh"
+    exit 1
+fi
+
 # Check/install dependencies
 echo ""
 echo "--- Dependencies ---"
@@ -33,9 +39,16 @@ echo "--- Whisper Model ($MODEL_NAME) ---"
 mkdir -p "$MODEL_DIR"
 
 if [ ! -f "$MODEL_DIR/$MODEL_NAME" ]; then
+    TEMP_FILE="$MODEL_DIR/${MODEL_NAME}.tmp"
     echo "Downloading $MODEL_NAME (~466 MB)..."
-    curl -L -o "$MODEL_DIR/$MODEL_NAME" "$MODEL_URL"
-    echo "Model downloaded."
+    if curl --fail -L -o "$TEMP_FILE" "$MODEL_URL"; then
+        mv "$TEMP_FILE" "$MODEL_DIR/$MODEL_NAME"
+        echo "Model downloaded."
+    else
+        rm -f "$TEMP_FILE"
+        echo "ERROR: Model download failed. Check your network connection."
+        exit 1
+    fi
 else
     echo "Model already present: $MODEL_DIR/$MODEL_NAME"
 fi
@@ -44,17 +57,29 @@ fi
 echo ""
 echo "--- Configuration ---"
 if [ ! -f "$CONFIG_DIR/config" ]; then
-    cp "$VOXA_DIR/config.default" "$CONFIG_DIR/config"
-    echo "Created default config at $CONFIG_DIR/config"
+    if [ -f "$VOXA_DIR/config.default" ]; then
+        cp "$VOXA_DIR/config.default" "$CONFIG_DIR/config"
+        echo "Created default config at $CONFIG_DIR/config"
+    else
+        echo "WARNING: config.default not found, skipping config creation"
+    fi
 else
     echo "Config already exists: $CONFIG_DIR/config"
 fi
 
+# Create tmp directory
+mkdir -p "$CONFIG_DIR/tmp"
+
 # Compile voxad
 echo ""
 echo "--- Compiling voxad ---"
-swiftc -O -o "$VOXA_DIR/voxad" "$VOXA_DIR/voxad.swift" -framework Cocoa -framework Carbon
-echo "Compiled voxad"
+if swiftc -O -o "$VOXA_DIR/voxad" "$VOXA_DIR/voxad.swift" -framework Cocoa -framework Carbon 2>&1; then
+    echo "Compiled voxad"
+else
+    echo "ERROR: Compilation failed. Make sure Xcode Command Line Tools are installed:"
+    echo "  xcode-select --install"
+    exit 1
+fi
 
 # Make scripts executable
 chmod +x "$VOXA_DIR/voxa.sh"
