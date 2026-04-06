@@ -108,6 +108,12 @@ chmod +x uninstall.sh
 
 This stops the daemon, removes the LaunchAgent, and cleans up `~/.voxa`. The source code is not deleted.
 
+## Roadmap
+
+- [ ] AI mode — reformulate transcription via LLM before pasting (Ollama for local, or API)
+- [ ] Language switching on the fly
+- [ ] Transcription history
+
 ## License
 
 MIT
