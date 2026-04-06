@@ -6,7 +6,7 @@ Hold a key, speak, release — your words are transcribed and pasted into the ac
 
 ## Features
 
-- **Push-to-talk** — hold Right Cmd (configurable) to record, release to transcribe
+- **Push-to-talk** — hold Right Cmd (configurable) to record, release to transcribe. Quick taps are ignored
 - **100% local** — no cloud, no API, no account, no cost
 - **Auto-paste** — transcribed text is copied to clipboard and pasted automatically
 - **Recording indicator** — Dynamic Island-style overlay with pulsing red dot
@@ -63,6 +63,10 @@ Edit `~/.voxa/config`:
 # Push-to-talk key
 key = right_cmd
 
+# Hold delay in ms before recording starts (default: 300)
+# Quick taps below this threshold are ignored
+# delay = 300
+
 # Whisper settings
 language = fr
 # model = ggml-small.bin
@@ -86,8 +90,10 @@ Restart Voxa after changing the config.
 
 ```
 Voxa.app (Swift daemon)
-  ├── detects key press → voxa.sh start
-  │     └── ffmpeg records mic → ~/.voxa/tmp/recording.wav
+  ├── detects key press → waits 300ms hold delay
+  │     ├── released before delay → ignored (normal key use)
+  │     └── held past delay → voxa.sh start
+  │           └── ffmpeg records mic → ~/.voxa/tmp/recording.wav
   ├── detects key release → voxa.sh stop
   │     └── whisper-cli transcribes → pbcopy → auto-paste
   └── shows/hides recording overlay

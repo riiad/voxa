@@ -44,6 +44,8 @@ let keyCodeMap: [String: UInt16] = [
     "f18": 79, "f19": 80, "f20": 90,
 ]
 
+var configuredDelay: Int = 300 // ms, updated by loadConfig
+
 func loadConfig() -> KeyMode {
     let configPath = NSString(string: "~/.voxa/config").expandingTildeInPath
     var key = "right_cmd"
@@ -68,6 +70,8 @@ func loadConfig() -> KeyMode {
                     mods = v.components(separatedBy: ",")
                         .map { $0.trimmingCharacters(in: .whitespaces) }
                         .filter { !$0.isEmpty }
+                case "delay":
+                    if let ms = Int(v) { configuredDelay = ms }
                 case "language", "model": break // handled by voxa.sh
                 default:
                     print("voxa: warning: unknown config key '\(k)' on line \(lineNum + 1)")
@@ -195,10 +199,13 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     var isRecording = false
     let processLock = NSLock()
     var globalTap: CFMachPort?
+    var holdTimer: DispatchWorkItem?
+    let holdDelay: Int // ms
 
-    init(mode: KeyMode, voxaScript: String) {
+    init(mode: KeyMode, voxaScript: String, holdDelay: Int) {
         self.mode = mode
         self.voxaScript = voxaScript
+        self.holdDelay = holdDelay
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -311,10 +318,24 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
 
             let isPressed = (rawFlags & deviceFlag) != 0
 
-            if isPressed && !isRecording {
-                handleStart()
-            } else if !isPressed && isRecording {
-                handleStop()
+            if isPressed && !isRecording && holdTimer == nil {
+                // Schedule recording after hold delay
+                let timer = DispatchWorkItem { [weak self] in
+                    DispatchQueue.main.async {
+                        self?.holdTimer = nil
+                        self?.handleStart()
+                    }
+                }
+                holdTimer = timer
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(holdDelay), execute: timer)
+            } else if !isPressed {
+                if let timer = holdTimer {
+                    // Released before delay — cancel, let the key pass through normally
+                    timer.cancel()
+                    holdTimer = nil
+                } else if isRecording {
+                    handleStop()
+                }
             }
 
             return Unmanaged.passUnretained(event)
@@ -360,10 +381,11 @@ case .modifierOnly(_, let name):
 case .keyCombo(let keyCode, let modifiers):
     print("voxa: push-to-talk with key \(keyCode) + modifiers \(modifiers.rawValue)")
 }
+print("voxa: hold delay \(configuredDelay)ms")
 print("voxa: press Ctrl+C to quit")
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory) // No dock icon
-let delegate = VoxaDelegate(mode: mode, voxaScript: voxaScript)
+let delegate = VoxaDelegate(mode: mode, voxaScript: voxaScript, holdDelay: configuredDelay)
 app.delegate = delegate
 app.run()

@@ -8,6 +8,10 @@
 
 key = right_cmd
 
+# Hold delay in ms before recording starts (default: 300)
+# Allows normal key taps without triggering recording
+# delay = 300
+
 # Whisper settings
 language = fr
 # model = ggml-small.bin
