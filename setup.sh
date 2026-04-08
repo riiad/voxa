@@ -99,7 +99,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<INFOPLIST
 </plist>
 INFOPLIST
 
-if swiftc -O -o "$APP_DIR/Contents/MacOS/voxad" "$VOXA_DIR/voxad.swift" -framework Cocoa -framework Carbon 2>&1; then
+if swiftc -O -o "$APP_DIR/Contents/MacOS/voxad" "$VOXA_DIR/voxad.swift" -framework Cocoa -framework Carbon -framework AVFoundation 2>&1; then
     echo "Compiled voxad"
 else
     echo "ERROR: Compilation failed. Make sure Xcode Command Line Tools are installed:"
@@ -107,10 +107,6 @@ else
     exit 1
 fi
 
-ln -sf "$VOXA_DIR/voxa.sh" "$APP_DIR/Contents/MacOS/voxa.sh"
-
-# Make scripts executable
-chmod +x "$VOXA_DIR/voxa.sh"
 
 # Install LaunchAgent
 echo ""

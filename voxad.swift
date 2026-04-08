@@ -18,6 +18,14 @@ enum KeyMode {
     case keyCombo(keyCode: UInt16, modifiers: CGEventFlags)
 }
 
+struct VoxaConfig {
+    let keyMode: KeyMode
+    var holdDelay: Int = 300
+    var language: String = "fr"
+    var modelPath: String = NSString(string: "~/.voxa/models/ggml-small.bin").expandingTildeInPath
+    var tmpDir: String = NSString(string: "~/.voxa/tmp").expandingTildeInPath
+}
+
 let modifierOnlyMap: [String: (UInt64, String)] = [
     "right_cmd":     (NX_DEVICERCMDKEYMASK, "Right Command"),
     "left_cmd":      (NX_DEVICELCMDKEYMASK, "Left Command"),
@@ -44,12 +52,13 @@ let keyCodeMap: [String: UInt16] = [
     "f18": 79, "f19": 80, "f20": 90,
 ]
 
-var configuredDelay: Int = 300 // ms, updated by loadConfig
-
-func loadConfig() -> KeyMode {
+func loadConfig() -> VoxaConfig {
     let configPath = NSString(string: "~/.voxa/config").expandingTildeInPath
     var key = "right_cmd"
     var mods: [String] = []
+    var delay = 300
+    var language = "fr"
+    var model = "ggml-small.bin"
 
     if FileManager.default.fileExists(atPath: configPath) {
         do {
@@ -59,56 +68,196 @@ func loadConfig() -> KeyMode {
                 if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
                 let parts = trimmed.split(separator: "=", maxSplits: 1)
                 guard parts.count == 2 else {
-                    print("voxa: warning: config line \(lineNum + 1) ignored (no '=' found): \(trimmed)")
+                    log(" warning: config line \(lineNum + 1) ignored (no '=' found): \(trimmed)")
                     continue
                 }
                 let k = parts[0].trimmingCharacters(in: .whitespaces).lowercased()
-                let v = parts[1].trimmingCharacters(in: .whitespaces).lowercased()
+                let v = parts[1].trimmingCharacters(in: .whitespaces)
                 switch k {
-                case "key": key = v
+                case "key": key = v.lowercased()
                 case "modifiers":
-                    mods = v.components(separatedBy: ",")
+                    mods = v.lowercased().components(separatedBy: ",")
                         .map { $0.trimmingCharacters(in: .whitespaces) }
                         .filter { !$0.isEmpty }
                 case "delay":
-                    if let ms = Int(v) { configuredDelay = ms }
-                case "language", "model": break // handled by voxa.sh
+                    if let ms = Int(v) { delay = ms }
+                case "language": language = v.lowercased()
+                case "model": model = v
                 default:
-                    print("voxa: warning: unknown config key '\(k)' on line \(lineNum + 1)")
+                    log(" warning: unknown config key '\(k)' on line \(lineNum + 1)")
                 }
             }
         } catch {
-            print("voxa: warning: could not read config at \(configPath): \(error.localizedDescription)")
-            print("voxa: using default key (right_cmd)")
+            log(" warning: could not read config at \(configPath): \(error.localizedDescription)")
+            log(" using defaults")
         }
     }
 
+    let keyMode: KeyMode
     if let (flag, name) = modifierOnlyMap[key] {
-        return .modifierOnly(deviceFlag: flag, name: name)
-    }
-
-    guard let code = keyCodeMap[key] else {
-        print("voxa: error: unknown key '\(key)'")
-        print("voxa: valid keys: \(keyCodeMap.keys.sorted().joined(separator: ", "))")
-        print("voxa: valid modifier keys: \(modifierOnlyMap.keys.sorted().joined(separator: ", "))")
+        keyMode = .modifierOnly(deviceFlag: flag, name: name)
+    } else if let code = keyCodeMap[key] {
+        var flags = CGEventFlags()
+        for name in mods {
+            switch name {
+            case "ctrl", "control": flags.insert(.maskControl)
+            case "shift": flags.insert(.maskShift)
+            case "alt", "option", "opt": flags.insert(.maskAlternate)
+            case "cmd", "command": flags.insert(.maskCommand)
+            default:
+                log(" error: unknown modifier '\(name)'")
+                exit(1)
+            }
+        }
+        keyMode = .keyCombo(keyCode: code, modifiers: flags)
+    } else {
+        log(" error: unknown key '\(key)'")
+        log(" valid keys: \(keyCodeMap.keys.sorted().joined(separator: ", "))")
+        log(" valid modifier keys: \(modifierOnlyMap.keys.sorted().joined(separator: ", "))")
         exit(1)
     }
 
-    var flags = CGEventFlags()
-    for name in mods {
-        switch name {
-        case "ctrl", "control": flags.insert(.maskControl)
-        case "shift": flags.insert(.maskShift)
-        case "alt", "option", "opt": flags.insert(.maskAlternate)
-        case "cmd", "command": flags.insert(.maskCommand)
-        default:
-            print("voxa: error: unknown modifier '\(name)'")
-            print("voxa: valid modifiers: ctrl, shift, alt/option, cmd/command")
-            exit(1)
+    let modelPath = NSString(string: "~/.voxa/models/\(model)").expandingTildeInPath
+    return VoxaConfig(keyMode: keyMode, holdDelay: delay, language: language, modelPath: modelPath)
+}
+
+// MARK: - Audio Recorder (via ffmpeg)
+
+class AudioRecorder {
+    private var ffmpegProcess: Process?
+    private let recordingURL: URL
+    private let tmpDir: String
+
+    init(tmpDir: String) {
+        self.tmpDir = tmpDir
+        recordingURL = URL(fileURLWithPath: tmpDir).appendingPathComponent("recording.wav")
+    }
+
+    func start() -> Bool {
+        let ffmpegPaths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+        guard let ffmpegPath = ffmpegPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            log("error: ffmpeg not found")
+            return false
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffmpegPath)
+        process.arguments = ["-y", "-f", "avfoundation", "-i", ":0", "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", recordingURL.path]
+
+        let logPath = (tmpDir as NSString).appendingPathComponent("ffmpeg.log")
+        FileManager.default.createFile(atPath: logPath, contents: nil)
+        process.standardError = FileHandle(forWritingAtPath: logPath)
+        process.standardOutput = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            ffmpegProcess = process
+
+            // Verify ffmpeg started
+            Thread.sleep(forTimeInterval: 0.3)
+            guard process.isRunning else {
+                log("error: ffmpeg exited immediately")
+                ffmpegProcess = nil
+                return false
+            }
+            return true
+        } catch {
+            log("error: could not start ffmpeg: \(error.localizedDescription)")
+            return false
         }
     }
 
-    return .keyCombo(keyCode: code, modifiers: flags)
+    func stop() -> URL? {
+        guard let process = ffmpegProcess else { return nil }
+        ffmpegProcess = nil
+
+        process.interrupt() // SIGINT for graceful WAV finalization
+        for _ in 0..<20 {
+            if !process.isRunning { break }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        if process.isRunning { process.terminate() }
+
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: recordingURL.path),
+              let attrs = try? fm.attributesOfItem(atPath: recordingURL.path),
+              let size = attrs[.size] as? UInt64,
+              size > 1000 else {
+            return nil
+        }
+
+        return recordingURL
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: recordingURL)
+    }
+}
+
+// MARK: - Transcriber
+
+class Transcriber {
+    let modelPath: String
+    let language: String
+    let tmpDir: String
+
+    init(modelPath: String, language: String, tmpDir: String) {
+        self.modelPath = modelPath
+        self.language = language
+        self.tmpDir = tmpDir
+    }
+
+    func transcribe(audioURL: URL) -> String? {
+        let outputBase = (tmpDir as NSString).appendingPathComponent("output")
+        let outputTxt = outputBase + ".txt"
+
+        // Find whisper-cli
+        let whisperPaths = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"]
+        guard let whisperPath = whisperPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            log(" error: whisper-cli not found")
+            return nil
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: whisperPath)
+        process.arguments = ["-m", modelPath, "-l", language, "-f", audioURL.path, "-np", "-otxt", "-of", outputBase]
+
+        let logURL = URL(fileURLWithPath: tmpDir).appendingPathComponent("whisper.log")
+        let logHandle = try? FileHandle(forWritingTo: logURL)
+        if logHandle == nil {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        process.standardOutput = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            log(" error: could not run whisper-cli: \(error.localizedDescription)")
+            return nil
+        }
+
+        // Save stderr to log
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        try? errData.write(to: logURL)
+
+        guard process.terminationStatus == 0 else {
+            log(" error: whisper-cli exited with status \(process.terminationStatus)")
+            return nil
+        }
+
+        guard let text = try? String(contentsOfFile: outputTxt, encoding: .utf8) else {
+            return nil
+        }
+
+        // Cleanup output file
+        try? FileManager.default.removeItem(atPath: outputTxt)
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 // MARK: - Recording Overlay
@@ -148,7 +297,6 @@ class RecordingOverlay {
         pill.layer?.cornerRadius = height / 2
         pill.layer?.backgroundColor = NSColor.black.cgColor
 
-        // Red dot
         let dotSize: CGFloat = 10
         let dot = NSView(frame: NSRect(x: 12, y: (height - dotSize) / 2, width: dotSize, height: dotSize))
         dot.wantsLayer = true
@@ -156,7 +304,6 @@ class RecordingOverlay {
         dot.layer?.backgroundColor = NSColor.systemRed.cgColor
         pill.addSubview(dot)
 
-        // Label
         let label = NSTextField(labelWithString: "Recording")
         label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         label.textColor = .white
@@ -169,7 +316,6 @@ class RecordingOverlay {
         win.orderFrontRegardless()
         self.window = win
 
-        // Pulse animation on the red dot
         var bright = true
         pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
@@ -190,25 +336,58 @@ class RecordingOverlay {
     }
 }
 
+// MARK: - Sounds
+
+func playSound(_ name: String) {
+    if let sound = NSSound(named: name) {
+        sound.play()
+    }
+}
+
+func notifyError(_ message: String) {
+    let script = "display notification \"\(message)\" with title \"Voxa Error\""
+    if let appleScript = NSAppleScript(source: script) {
+        appleScript.executeAndReturnError(nil)
+    }
+}
+
+// MARK: - Clipboard & Paste
+
+func copyAndPaste(_ text: String) {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(text, forType: .string)
+
+    // Simulate Cmd+V
+    let source = CGEventSource(stateID: .combinedSessionState)
+    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true) // 9 = V
+    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
+    keyDown?.flags = .maskCommand
+    keyUp?.flags = .maskCommand
+    keyDown?.post(tap: .cghidEventTap)
+    keyUp?.post(tap: .cghidEventTap)
+}
+
 // MARK: - App Delegate
 
 class VoxaDelegate: NSObject, NSApplicationDelegate {
-    let mode: KeyMode
-    let voxaScript: String
+    let config: VoxaConfig
     let overlay = RecordingOverlay()
+    let recorder: AudioRecorder
+    let transcriber: Transcriber
     var isRecording = false
-    let processLock = NSLock()
     var globalTap: CFMachPort?
     var holdTimer: DispatchWorkItem?
-    let holdDelay: Int // ms
 
-    init(mode: KeyMode, voxaScript: String, holdDelay: Int) {
-        self.mode = mode
-        self.voxaScript = voxaScript
-        self.holdDelay = holdDelay
+    init(config: VoxaConfig) {
+        self.config = config
+        self.recorder = AudioRecorder(tmpDir: config.tmpDir)
+        self.transcriber = Transcriber(modelPath: config.modelPath, language: config.language, tmpDir: config.tmpDir)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Ensure tmp directory exists
+        try? FileManager.default.createDirectory(atPath: config.tmpDir, withIntermediateDirectories: true)
         setupEventTap()
         setupSignalHandlers()
     }
@@ -228,43 +407,63 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     func cleanup() {
         if isRecording {
             print("\nvoxa: cleaning up...")
-            DispatchQueue.main.async { self.overlay.hide() }
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = [voxaScript, "stop"]
-            try? process.run()
-            process.waitUntilExit()
-        }
-    }
-
-    // MARK: - Process management
-
-    func runVoxa(_ action: String) {
-        processLock.lock()
-        defer { processLock.unlock() }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [voxaScript, action]
-        do {
-            try process.run()
-        } catch {
-            print("voxa: error launching \(action): \(error.localizedDescription)")
-            isRecording = false
+            _ = recorder.stop()
+            recorder.cleanup()
             DispatchQueue.main.async { self.overlay.hide() }
         }
     }
+
+    // MARK: - Recording lifecycle
 
     func handleStart() {
         isRecording = true
-        DispatchQueue.main.async { self.overlay.show() }
-        DispatchQueue.global().async { self.runVoxa("start") }
+        overlay.show()
+        playSound("Tink")
+        log("recording started")
+
+        DispatchQueue.global().async {
+            if !self.recorder.start() {
+                log("recording failed to start")
+                DispatchQueue.main.async {
+                    self.isRecording = false
+                    self.overlay.hide()
+                    notifyError("Microphone recording failed. Check permissions.")
+                }
+            }
+        }
     }
 
     func handleStop() {
         isRecording = false
-        DispatchQueue.main.async { self.overlay.hide() }
-        DispatchQueue.global().async { self.runVoxa("stop") }
+        overlay.hide()
+        log(" recording stopped")
+
+        DispatchQueue.global().async {
+            guard let audioURL = self.recorder.stop() else {
+                log(" no audio recorded")
+                notifyError("No audio recorded")
+                self.recorder.cleanup()
+                return
+            }
+
+            log(" transcribing...")
+            playSound("Pop")
+
+            guard let text = self.transcriber.transcribe(audioURL: audioURL) else {
+                log(" transcription failed")
+                notifyError("Transcription failed. Check ~/.voxa/tmp/whisper.log")
+                self.recorder.cleanup()
+                return
+            }
+
+            log(" \(text)")
+
+            DispatchQueue.main.async {
+                copyAndPaste(text)
+            }
+
+            self.recorder.cleanup()
+        }
     }
 
     // MARK: - Event tap
@@ -274,7 +473,6 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
             | (1 << CGEventType.keyUp.rawValue)
             | (1 << CGEventType.flagsChanged.rawValue)
 
-        // Store self in a pointer for the C callback
         let refcon = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
 
         guard let eventTap = CGEvent.tapCreate(
@@ -289,7 +487,7 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
             },
             userInfo: refcon
         ) else {
-            print("voxa: failed to create event tap. Grant Accessibility permission in System Settings.")
+            log(" failed to create event tap. Grant Accessibility permission in System Settings.")
             exit(1)
         }
 
@@ -310,7 +508,7 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
 
         let rawFlags = event.flags.rawValue
 
-        switch mode {
+        switch config.keyMode {
         case .modifierOnly(let deviceFlag, _):
             guard type == .flagsChanged else {
                 return Unmanaged.passUnretained(event)
@@ -319,7 +517,6 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
             let isPressed = (rawFlags & deviceFlag) != 0
 
             if isPressed && !isRecording && holdTimer == nil {
-                // Schedule recording after hold delay
                 let timer = DispatchWorkItem { [weak self] in
                     DispatchQueue.main.async {
                         self?.holdTimer = nil
@@ -327,10 +524,9 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
                 holdTimer = timer
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(holdDelay), execute: timer)
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(config.holdDelay), execute: timer)
             } else if !isPressed {
                 if let timer = holdTimer {
-                    // Released before delay — cancel, let the key pass through normally
                     timer.cancel()
                     holdTimer = nil
                 } else if isRecording {
@@ -362,30 +558,37 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// MARK: - Logging
+
+func log(_ message: String) {
+    let msg = "voxa: \(message)\n"
+    fputs(msg, stderr)
+    // Also write to log file
+    let logPath = NSString(string: "~/.voxa/tmp/voxad.log").expandingTildeInPath
+    if let handle = FileHandle(forWritingAtPath: logPath) {
+        handle.seekToEndOfFile()
+        handle.write(msg.data(using: .utf8)!)
+        handle.closeFile()
+    } else {
+        FileManager.default.createFile(atPath: logPath, contents: msg.data(using: .utf8))
+    }
+}
+
 // MARK: - Main
 
-let voxaDir = URL(fileURLWithPath: CommandLine.arguments[0])
-    .deletingLastPathComponent().path
-let voxaScript = "\(voxaDir)/voxa.sh"
+let config = loadConfig()
 
-guard FileManager.default.isExecutableFile(atPath: voxaScript) else {
-    print("voxa: error: voxa.sh not found at \(voxaScript)")
-    exit(1)
-}
-
-let mode = loadConfig()
-
-switch mode {
+switch config.keyMode {
 case .modifierOnly(_, let name):
-    print("voxa: push-to-talk with \(name)")
+    log(" push-to-talk with \(name)")
 case .keyCombo(let keyCode, let modifiers):
-    print("voxa: push-to-talk with key \(keyCode) + modifiers \(modifiers.rawValue)")
+    log(" push-to-talk with key \(keyCode) + modifiers \(modifiers.rawValue)")
 }
-print("voxa: hold delay \(configuredDelay)ms")
-print("voxa: press Ctrl+C to quit")
+log(" hold delay \(config.holdDelay)ms, language \(config.language)")
+log(" press Ctrl+C to quit")
 
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory) // No dock icon
-let delegate = VoxaDelegate(mode: mode, voxaScript: voxaScript, holdDelay: configuredDelay)
+app.setActivationPolicy(.accessory)
+let delegate = VoxaDelegate(config: config)
 app.delegate = delegate
 app.run()
