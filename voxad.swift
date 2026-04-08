@@ -264,13 +264,15 @@ class Transcriber {
 
 class RecordingOverlay {
     private var window: NSWindow?
-    private var pulseTimer: Timer?
+    private var timer: Timer?
     private var dotView: NSView?
+    private var timerLabel: NSTextField?
+    private var startTime: Date?
 
     func show() {
         guard let screen = NSScreen.main else { return }
 
-        let width: CGFloat = 120
+        let width: CGFloat = 90
         let height: CGFloat = 32
         let frame = NSRect(
             x: screen.frame.midX - width / 2,
@@ -304,22 +306,34 @@ class RecordingOverlay {
         dot.layer?.backgroundColor = NSColor.systemRed.cgColor
         pill.addSubview(dot)
 
-        let label = NSTextField(labelWithString: "Recording")
-        label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        let label = NSTextField(labelWithString: "00:00")
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         label.textColor = .white
-        label.frame = NSRect(x: 28, y: (height - 16) / 2, width: 80, height: 16)
+        label.alignment = .center
+        label.frame = NSRect(x: 26, y: (height - 16) / 2, width: 52, height: 16)
         pill.addSubview(label)
 
         win.contentView = pill
         self.dotView = dot
+        self.timerLabel = label
+        self.startTime = Date()
 
         win.orderFrontRegardless()
         self.window = win
 
         var bright = true
-        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
-                self?.dotView?.layer?.backgroundColor = bright
+                guard let self = self, let start = self.startTime else { return }
+
+                // Update timer
+                let elapsed = Int(Date().timeIntervalSince(start))
+                let mins = elapsed / 60
+                let secs = elapsed % 60
+                self.timerLabel?.stringValue = String(format: "%02d:%02d", mins, secs)
+
+                // Pulse dot
+                self.dotView?.layer?.backgroundColor = bright
                     ? NSColor.systemRed.withAlphaComponent(0.3).cgColor
                     : NSColor.systemRed.cgColor
                 bright = !bright
@@ -328,11 +342,13 @@ class RecordingOverlay {
     }
 
     func hide() {
-        pulseTimer?.invalidate()
-        pulseTimer = nil
+        timer?.invalidate()
+        timer = nil
         window?.orderOut(nil)
         window = nil
         dotView = nil
+        timerLabel = nil
+        startTime = nil
     }
 }
 
