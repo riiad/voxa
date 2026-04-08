@@ -19,13 +19,6 @@ fi
 echo ""
 echo "--- Dependencies ---"
 
-if ! command -v ffmpeg &>/dev/null; then
-    echo "Installing ffmpeg..."
-    brew install ffmpeg
-else
-    echo "ffmpeg: OK"
-fi
-
 if ! command -v whisper-cli &>/dev/null; then
     echo "Installing whisper-cpp..."
     brew install whisper-cpp
@@ -106,6 +99,12 @@ else
     echo "  xcode-select --install"
     exit 1
 fi
+
+# Ad-hoc sign the bundle so TCC can properly identify it.
+# Without this, the linker-signed binary has an unstable identity and
+# Accessibility permissions silently fail for CGEvent posting.
+codesign --force --sign - --identifier com.voxa.daemon --deep "$APP_DIR"
+echo "Signed Voxa.app (ad-hoc, identifier=com.voxa.daemon)"
 
 
 # Install LaunchAgent
