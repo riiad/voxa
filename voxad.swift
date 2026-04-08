@@ -176,7 +176,14 @@ class AudioRecorder {
             if !process.isRunning { break }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            process.terminate()
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+            log("warning: ffmpeg required SIGKILL")
+        }
 
         let fm = FileManager.default
         guard fm.fileExists(atPath: recordingURL.path),
@@ -256,7 +263,58 @@ class Transcriber {
         try? FileManager.default.removeItem(atPath: outputTxt)
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        if trimmed.isEmpty || isHallucination(trimmed) {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func isHallucination(_ text: String) -> Bool {
+        let lower = text.lowercased()
+
+        // Known whisper hallucination phrases
+        let hallucinations = [
+            "sous-titres réalisés par",
+            "sous-titres par",
+            "sous-titrage",
+            "amara.org",
+            "merci d'avoir regardé",
+            "merci de votre attention",
+            "thanks for watching",
+            "thank you for watching",
+            "please subscribe",
+            "like and subscribe",
+            "copyright",
+            "www.",
+            "http",
+        ]
+
+        for pattern in hallucinations {
+            if lower.contains(pattern) {
+                log("hallucination filtered: \(text)")
+                return true
+            }
+        }
+
+        // Bracketed annotations like [Musique], [Bruit], [silence], ...
+        let bracketPattern = try? NSRegularExpression(pattern: "^\\[.*\\]$")
+        let range = NSRange(lower.startIndex..., in: lower)
+        if bracketPattern?.firstMatch(in: lower, range: range) != nil {
+            log("hallucination filtered: \(text)")
+            return true
+        }
+
+        // Repeated short fragments (e.g. "..." or "♪ ♪ ♪")
+        let stripped = lower.replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: ".", with: "")
+            .replacingOccurrences(of: "♪", with: "")
+            .replacingOccurrences(of: "…", with: "")
+        if stripped.isEmpty {
+            log("hallucination filtered: \(text)")
+            return true
+        }
+
+        return false
     }
 }
 
@@ -394,6 +452,8 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     var isRecording = false
     var globalTap: CFMachPort?
     var holdTimer: DispatchWorkItem?
+    var recordingTimeout: DispatchWorkItem?
+    let maxRecordingDuration: Int = 120 // seconds
 
     init(config: VoxaConfig) {
         self.config = config
@@ -432,47 +492,64 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Recording lifecycle
 
     func handleStart() {
-        isRecording = true
-        overlay.show()
         playSound("Tink")
-        log("recording started")
+        log("recording starting...")
 
         DispatchQueue.global().async {
-            if !self.recorder.start() {
+            guard self.recorder.start() else {
                 log("recording failed to start")
                 DispatchQueue.main.async {
-                    self.isRecording = false
-                    self.overlay.hide()
                     notifyError("Microphone recording failed. Check permissions.")
                 }
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.isRecording = true
+                self.overlay.show()
+                log("recording started")
+
+                // Safety timeout
+                let timeout = DispatchWorkItem { [weak self] in
+                    guard let self = self, self.isRecording else { return }
+                    log("recording timeout after \(self.maxRecordingDuration)s")
+                    self.handleStop()
+                }
+                self.recordingTimeout = timeout
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + .seconds(self.maxRecordingDuration),
+                    execute: timeout
+                )
             }
         }
     }
 
     func handleStop() {
+        guard isRecording else { return }
         isRecording = false
+        recordingTimeout?.cancel()
+        recordingTimeout = nil
         overlay.hide()
-        log(" recording stopped")
+        log("recording stopped")
 
         DispatchQueue.global().async {
             guard let audioURL = self.recorder.stop() else {
-                log(" no audio recorded")
-                notifyError("No audio recorded")
+                log("no audio recorded")
                 self.recorder.cleanup()
                 return
             }
 
-            log(" transcribing...")
+            log("transcribing...")
             playSound("Pop")
 
             guard let text = self.transcriber.transcribe(audioURL: audioURL) else {
-                log(" transcription failed")
+                log("transcription failed")
                 notifyError("Transcription failed. Check ~/.voxa/tmp/whisper.log")
                 self.recorder.cleanup()
                 return
             }
 
-            log(" \(text)")
+            log(text)
 
             DispatchQueue.main.async {
                 copyAndPaste(text)
@@ -516,6 +593,7 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
 
     func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            log("warning: event tap was disabled, re-enabling")
             if let tap = globalTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
@@ -534,10 +612,8 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
 
             if isPressed && !isRecording && holdTimer == nil {
                 let timer = DispatchWorkItem { [weak self] in
-                    DispatchQueue.main.async {
-                        self?.holdTimer = nil
-                        self?.handleStart()
-                    }
+                    self?.holdTimer = nil
+                    self?.handleStart()
                 }
                 holdTimer = timer
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(config.holdDelay), execute: timer)
@@ -546,7 +622,7 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
                     timer.cancel()
                     holdTimer = nil
                 } else if isRecording {
-                    handleStop()
+                    DispatchQueue.main.async { self.handleStop() }
                 }
             }
 
@@ -564,12 +640,12 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
             }
 
             if type == .keyDown && !isRecording {
-                handleStart()
+                DispatchQueue.main.async { self.handleStart() }
             } else if type == .keyUp && isRecording {
-                handleStop()
+                DispatchQueue.main.async { self.handleStop() }
             }
 
-            return nil
+            return Unmanaged.passUnretained(event)
         }
     }
 }
