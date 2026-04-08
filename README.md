@@ -2,17 +2,18 @@
 
 Lightweight, free, local speech-to-text for macOS. A minimal alternative to SuperWhisper using [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
 
-Hold a key, speak, release — your words are transcribed and copied to the clipboard.
+Hold a key, speak, release — your words are transcribed and pasted into the active app.
 
 ## Features
 
 - **Push-to-talk** — hold Right Cmd (configurable) to record, release to transcribe. Quick taps are ignored
 - **100% local** — no cloud, no API, no account, no cost
 - **Auto-paste** — transcribed text is copied to clipboard and pasted automatically
-- **Recording indicator** — Dynamic Island-style overlay with pulsing red dot
+- **Recording indicator** — Dynamic Island-style overlay with elapsed time and pulsing red dot
 - **Auto-start** — launches automatically at login via LaunchAgent
 - **Fast** — uses whisper.cpp with Metal acceleration on Apple Silicon
 - **French by default** — optimized for French, configurable for any language
+- **Hallucination filter** — detects and discards common whisper artifacts
 
 ## Requirements
 
@@ -29,13 +30,13 @@ chmod +x setup.sh
 ```
 
 The setup script will:
-1. Install `ffmpeg` and `whisper-cpp` via Homebrew
+1. Install `whisper-cpp` via Homebrew
 2. Download the Whisper `small` model (~466 MB)
-3. Build the `Voxa.app` bundle
+3. Build and sign the `Voxa.app` bundle
 4. Install a LaunchAgent for auto-start at login
 
 On first launch, grant permissions in **System Settings > Privacy & Security**:
-- **Accessibility** — allow Voxa
+- **Accessibility** — allow Voxa (required for auto-paste)
 - **Microphone** — allow Voxa (popup on first use)
 
 ## Usage
@@ -90,13 +91,13 @@ Restart Voxa after changing the config.
 
 ```
 Voxa.app (Swift daemon)
-  ├── detects key press → waits 300ms hold delay
+  ├── detects key hold → waits 300ms hold delay
   │     ├── released before delay → ignored (normal key use)
-  │     └── held past delay → voxa.sh start
-  │           └── ffmpeg records mic → ~/.voxa/tmp/recording.wav
-  ├── detects key release → voxa.sh stop
-  │     └── whisper-cli transcribes → pbcopy → auto-paste
-  └── shows/hides recording overlay
+  │     └── held past delay → starts recording
+  │           └── AVFoundation captures mic → ~/.voxa/tmp/recording.wav
+  ├── detects key release → stops recording
+  │     └── whisper-cli transcribes → clipboard → auto-paste
+  └── shows/hides recording overlay with timer
 ```
 
 ## Uninstall
@@ -113,6 +114,7 @@ This stops the daemon, removes the LaunchAgent, and cleans up `~/.voxa`. The sou
 - [ ] AI mode — reformulate transcription via LLM before pasting (Ollama for local, or API)
 - [ ] Language switching on the fly
 - [ ] Transcription history
+- [ ] Menu bar icon
 
 ## License
 
