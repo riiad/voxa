@@ -447,13 +447,32 @@ func notifyError(_ message: String) {
     }
 }
 
-// MARK: - Clipboard
+// MARK: - Clipboard & Paste
 
-func copyToClipboard(_ text: String) {
+func copyAndPaste(_ text: String) {
     let pasteboard = NSPasteboard.general
     pasteboard.clearContents()
     pasteboard.setString(text, forType: .string)
     log("copied to clipboard (\(text.count) chars)")
+
+    guard AXIsProcessTrusted() else {
+        log("warning: Accessibility not granted, skipping paste. Text is on clipboard.")
+        return
+    }
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
+        let src = CGEventSource(stateID: .hidSystemState)
+        guard let vDown = CGEvent(keyboardEventSource: src, virtualKey: 9, keyDown: true),
+              let vUp = CGEvent(keyboardEventSource: src, virtualKey: 9, keyDown: false) else {
+            log("warning: could not create paste event. Text is on clipboard.")
+            return
+        }
+        vDown.flags = .maskCommand
+        vUp.flags = .maskCommand
+        vDown.post(tap: .cghidEventTap)
+        vUp.post(tap: .cghidEventTap)
+        log("paste sent")
+    }
 }
 
 // MARK: - App Delegate
@@ -558,20 +577,31 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
 
             let isPressed = (UInt64(rawFlags) & deviceFlag) != 0
 
-            if isPressed && !isRecording && !isStarting && holdTimer == nil {
-                let timer = DispatchWorkItem { [weak self] in
-                    self?.holdTimer = nil
-                    self?.handleStart()
+            if isPressed {
+                if isRecording || isStarting {
+                    // Key pressed again while recording → force stop (recovery from missed release)
+                    holdTimer?.cancel()
+                    holdTimer = nil
+                    isStarting = false
+                    if isRecording { handleStop() }
+                } else if holdTimer == nil {
+                    // Normal press → start hold timer
+                    let timer = DispatchWorkItem { [weak self] in
+                        self?.holdTimer = nil
+                        self?.handleStart()
+                    }
+                    holdTimer = timer
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(config.holdDelay), execute: timer)
                 }
-                holdTimer = timer
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(config.holdDelay), execute: timer)
             } else if !isPressed {
                 if let timer = holdTimer {
                     timer.cancel()
                     holdTimer = nil
-                } else if isRecording {
+                }
+                if isRecording {
                     handleStop()
                 }
+                isStarting = false
             }
 
         case .keyCombo(let expectedKeyCode, let requiredMods):
@@ -592,8 +622,9 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Recording lifecycle
 
     func handleStart() {
-        guard !isStarting else { return }
+        guard !isStarting && !isRecording else { return }
         isStarting = true
+        log("handleStart called")
         playSound("Tink")
         log("recording starting...")
 
@@ -652,7 +683,7 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            copyToClipboard(text)
+            copyAndPaste(text)
             log(text)
             self.recorder.cleanup()
         }

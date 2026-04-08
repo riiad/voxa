@@ -2,7 +2,7 @@
 
 Lightweight, free, local speech-to-text for macOS. A minimal alternative to SuperWhisper using [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
 
-Hold a key, speak, release — your words are transcribed and pasted into the active app.
+Hold a key, speak, release — your words are transcribed and copied to the clipboard.
 
 ## Features
 

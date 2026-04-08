@@ -130,7 +130,6 @@ cat > "$PLIST_PATH" <<PLIST
     <array>
         <string>/usr/bin/open</string>
         <string>-W</string>
-        <string>-n</string>
         <string>-a</string>
         <string>$APP_DIR</string>
     </array>
