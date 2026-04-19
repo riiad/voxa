@@ -489,7 +489,7 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     var isStarting = false
     var holdTimer: DispatchWorkItem?
     var recordingTimeout: DispatchWorkItem?
-    let maxRecordingDuration: Int = 30
+    let maxRecordingDuration: Int = 60
     var globalMonitor: Any?
     var localMonitor: Any?
 
