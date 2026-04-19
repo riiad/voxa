@@ -302,11 +302,14 @@ class Transcriber {
 
         try? FileManager.default.removeItem(atPath: outputTxt)
 
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || isHallucination(trimmed) {
+        let cleaned = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if cleaned.isEmpty || isHallucination(cleaned) {
             return nil
         }
-        return trimmed
+        return cleaned
     }
 
     private func isHallucination(_ text: String) -> Bool {
