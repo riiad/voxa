@@ -11,6 +11,7 @@ Hold a key, speak, release — your words are transcribed and pasted into the ac
 - **Auto-paste** — transcribed text is pasted into the active app, then your previous clipboard is restored
 - **Fast** — the model stays loaded in a local `whisper-server` while you dictate (no model reload per dictation), and is unloaded after 10 idle minutes
 - **Recording indicator** — Dynamic Island-style overlay with elapsed time and pulsing red dot
+- **Menu bar icon** — shows ready / recording / transcribing / paused, warns when Accessibility is missing; menu to pause, edit the config, show the log, restart or quit
 - **Auto-start** — launches automatically at login via LaunchAgent
 - **Metal** — whisper.cpp with Metal acceleration on Apple Silicon
 - **French by default** — optimized for French, configurable for any language
@@ -103,7 +104,7 @@ key = space
 modifiers = ctrl, shift
 ```
 
-Restart Voxa after changing the config.
+Restart Voxa after changing the config (menu bar icon → Restart Voxa).
 
 ## Development
 
@@ -144,7 +145,6 @@ This stops the daemon, removes the LaunchAgent, and cleans up `~/.voxa`. The sou
 - [ ] AI mode — reformulate transcription via LLM before pasting (Ollama for local, or API)
 - [ ] Language switching on the fly
 - [ ] Transcription history
-- [ ] Menu bar icon
 
 ## License
 
