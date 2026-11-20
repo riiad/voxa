@@ -4,7 +4,7 @@ set -e
 VOXA_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODEL_DIR="$HOME/.voxa/models"
 CONFIG_DIR="$HOME/.voxa"
-MODEL_NAME="ggml-small.bin"
+MODEL_NAME="ggml-large-v3-turbo-q5_0.bin"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL_NAME"
 
 echo "=== Voxa Setup ==="
@@ -33,7 +33,7 @@ mkdir -p "$MODEL_DIR"
 
 if [ ! -f "$MODEL_DIR/$MODEL_NAME" ]; then
     TEMP_FILE="$MODEL_DIR/${MODEL_NAME}.tmp"
-    echo "Downloading $MODEL_NAME (~466 MB)..."
+    echo "Downloading $MODEL_NAME (~550 MB)..."
     if curl --fail -L -o "$TEMP_FILE" "$MODEL_URL"; then
         mv "$TEMP_FILE" "$MODEL_DIR/$MODEL_NAME"
         echo "Model downloaded."
@@ -67,45 +67,7 @@ mkdir -p "$CONFIG_DIR/tmp"
 echo ""
 echo "--- Building Voxa.app ---"
 APP_DIR="$VOXA_DIR/Voxa.app"
-mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
-
-cat > "$APP_DIR/Contents/Info.plist" <<INFOPLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>com.voxa.daemon</string>
-    <key>CFBundleName</key>
-    <string>Voxa</string>
-    <key>CFBundleExecutable</key>
-    <string>voxad</string>
-    <key>CFBundleVersion</key>
-    <string>1.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Voxa needs microphone access to record speech for transcription.</string>
-</dict>
-</plist>
-INFOPLIST
-
-if swiftc -O -o "$APP_DIR/Contents/MacOS/voxad" "$VOXA_DIR/voxad.swift" -framework Cocoa -framework Carbon -framework AVFoundation 2>&1; then
-    echo "Compiled voxad"
-else
-    echo "ERROR: Compilation failed. Make sure Xcode Command Line Tools are installed:"
-    echo "  xcode-select --install"
-    exit 1
-fi
-
-# Ad-hoc sign the bundle so TCC can properly identify it.
-# Without this, the linker-signed binary has an unstable identity and
-# Accessibility permissions silently fail for CGEvent posting.
-codesign --force --sign - --identifier com.voxa.daemon --deep "$APP_DIR"
-echo "Signed Voxa.app (ad-hoc, identifier=com.voxa.daemon)"
-
+"$VOXA_DIR/build.sh"
 
 # Install LaunchAgent
 echo ""
@@ -161,3 +123,6 @@ echo ""
 echo "Config: ~/.voxa/config"
 echo ""
 echo "Usage: Hold Right Cmd to record, release to transcribe and paste."
+echo ""
+echo "Note: each rebuild changes the app's ad-hoc signature, so macOS drops the"
+echo "Accessibility permission. Re-enable Voxa in System Settings after running setup again."

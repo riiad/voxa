@@ -14,4 +14,20 @@ key = right_cmd
 
 # Whisper settings
 language = fr
-# model = ggml-small.bin
+# model = ggml-large-v3-turbo-q5_0.bin
+# (ggml-small.bin: twice as fast, less accurate)
+
+# Vocabulary hint: names, jargon and spellings whisper should prefer
+# prompt = Jean-Baptiste, KPI, Cmd+Tab
+
+# Takes quieter than this (peak level in dBFS) are not transcribed, because
+# whisper invents text on silence. voxad.log prints each take's peak: raise
+# toward -40 in a noisy room, lower toward -60 if quiet speech gets dropped.
+# silence_db = -50
+
+# Put the previous clipboard back after pasting (default: true)
+# restore_clipboard = true
+
+# whisper-server keeps the model in memory (~700 MB) for fast
+# transcriptions; it stops after this many minutes without dictation.
+# server_idle_minutes = 10

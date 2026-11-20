@@ -7,7 +7,7 @@ echo "--- Stopping Voxa ---"
 launchctl bootout "gui/$(id -u)/com.voxa.daemon" 2>/dev/null || true
 pkill -f "Voxa.app" 2>/dev/null || true
 pkill -f voxad 2>/dev/null || true
-pkill -f "ffmpeg.*voxa" 2>/dev/null || true
+[ -f "$HOME/.voxa/tmp/whisper-server.pid" ] && kill "$(cat "$HOME/.voxa/tmp/whisper-server.pid")" 2>/dev/null || true
 echo "Stopped"
 
 # Remove LaunchAgent
@@ -33,7 +33,6 @@ echo "  rm -rf $(cd "$(dirname "$0")" && pwd)"
 echo ""
 echo "To uninstall dependencies (optional):"
 echo "  brew uninstall whisper-cpp"
-echo "  brew uninstall skhd  # if installed"
 echo ""
 echo "Remember to remove Voxa from:"
 echo "  System Settings > Privacy & Security > Accessibility"
