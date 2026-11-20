@@ -648,7 +648,11 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     let recorder = AudioRecorder()
     let server: WhisperServer
     enum TakeState: Equatable { case idle, starting(discard: Bool), recording }
-    var state = TakeState.idle
+    var state = TakeState.idle { didSet { refreshStatusItem() } }
+    var paused = false { didSet { refreshStatusItem() } }
+    var pendingTranscriptions = 0 { didSet { refreshStatusItem() } }
+    var statusItem: NSStatusItem?
+    var accessibilityTimer: Timer?
     // Serializes recorder start/stop so a stop can never land on the next take's engine.
     let audioQueue = DispatchQueue(label: "voxa.audio")
     // One transcription at a time: pastes stay in dictation order.
@@ -666,6 +670,7 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupStatusItem()
         let fm = FileManager.default
         // Purge takes left over by a crash (files are uniquely named, nothing overwrites them).
         for name in (try? fm.contentsOfDirectory(atPath: tmpDir)) ?? [] where name.hasSuffix(".wav") {
@@ -677,7 +682,7 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
         // which happens after every rebuild because the ad-hoc signature changes.
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         if !AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary) {
-            log("warning: Accessibility not granted, system prompt shown. Restart Voxa after granting it.")
+            log("warning: Accessibility not granted, system prompt shown.")
         }
 
         if !configErrors.isEmpty {
@@ -805,7 +810,7 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Recording lifecycle
 
     func handleStart() {
-        guard state == .idle else { return }
+        guard state == .idle, !paused else { return }
         state = .starting(discard: false)
         playSound("Tink")
         log("recording starting...")
@@ -874,12 +879,16 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
                 try? FileManager.default.removeItem(at: take.url)
                 return
             }
+            DispatchQueue.main.async { self.pendingTranscriptions += 1 }
             self.transcribeQueue.async { self.transcribeAndPaste(take.url) }
         }
     }
 
     func transcribeAndPaste(_ audioURL: URL) {
-        defer { try? FileManager.default.removeItem(at: audioURL) }
+        defer {
+            try? FileManager.default.removeItem(at: audioURL)
+            DispatchQueue.main.async { self.pendingTranscriptions -= 1 }
+        }
         log("transcribing...")
         playSound("Pop")
 
@@ -899,10 +908,137 @@ class VoxaDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// MARK: - Menu bar
+
+extension VoxaDelegate: NSMenuDelegate {
+    func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        let menu = NSMenu()
+        menu.delegate = self  // rebuilt in menuNeedsUpdate, so it always reflects the current state
+        item.menu = menu
+        statusItem = item
+        refreshStatusItem()
+    }
+
+    func refreshStatusItem() {
+        guard let button = statusItem?.button else { return }
+        let trusted = AXIsProcessTrusted()
+
+        let symbol: String
+        var tint: NSColor? = nil
+        if !trusted {
+            symbol = "exclamationmark.triangle"
+        } else if state != .idle {
+            symbol = "mic.fill"
+            tint = .systemRed
+        } else if pendingTranscriptions > 0 {
+            symbol = "waveform"
+        } else if paused {
+            symbol = "mic.slash"
+        } else {
+            symbol = "mic"
+        }
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Voxa")
+        button.image?.isTemplate = true
+        button.contentTintColor = tint
+
+        // The grant can arrive any time from System Settings: poll only while it's missing.
+        if trusted {
+            accessibilityTimer?.invalidate()
+            accessibilityTimer = nil
+        } else if accessibilityTimer == nil {
+            accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+                self?.refreshStatusItem()
+            }
+        }
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        let keyName: String
+        if case .modifierOnly(let key) = config.keyMode { keyName = key.name } else { keyName = "your shortcut" }
+        let status: String
+        if state != .idle {
+            status = "Recording…"
+        } else if pendingTranscriptions > 0 {
+            status = "Transcribing…"
+        } else if paused {
+            status = "Paused"
+        } else {
+            status = "Ready — hold \(keyName) to dictate"
+        }
+        menu.addItem(NSMenuItem(title: status, action: nil, keyEquivalent: ""))
+
+        if !AXIsProcessTrusted() {
+            menu.addItem(menuItem("⚠︎ Grant Accessibility (needed to paste)…", #selector(openAccessibilitySettings)))
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(menuItem(paused ? "Resume Dictation" : "Pause Dictation", #selector(togglePause)))
+        menu.addItem(.separator())
+        menu.addItem(menuItem("Edit Config…", #selector(openConfig)))
+        menu.addItem(menuItem("Show Log", #selector(openLog)))
+        menu.addItem(menuItem("Restart Voxa (reload config)", #selector(restart)))
+        menu.addItem(menuItem("Quit Voxa (until next login)", #selector(quit)))
+    }
+
+    private func menuItem(_ title: String, _ action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc func togglePause() {
+        paused.toggle()
+        log(paused ? "dictation paused" : "dictation resumed")
+    }
+
+    @objc func openAccessibilitySettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    @objc func openConfig() {
+        let path = voxaDir + "/config"
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: Data("# Voxa configuration, see README\n".utf8))
+        }
+        // The config has no extension, so no app is registered for it: open it in TextEdit explicitly.
+        NSWorkspace.shared.open([URL(fileURLWithPath: path)],
+                                withApplicationAt: URL(fileURLWithPath: "/System/Applications/TextEdit.app"),
+                                configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    @objc func openLog() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
+    }
+
+    /// Exits and lets launchd's KeepAlive start a fresh instance, which rereads the config.
+    // ponytail: relies on the LaunchAgent; when launched by hand this only quits.
+    @objc func restart() {
+        log("restarting")
+        cleanup()
+        exit(0)
+    }
+
+    /// Unloads the LaunchAgent first, otherwise KeepAlive would relaunch Voxa right away.
+    /// It loads again at next login (RunAtLoad).
+    @objc func quit() {
+        log("quitting until next login")
+        let launchctl = Process()
+        launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        launchctl.arguments = ["bootout", "gui/\(getuid())/com.voxa.daemon"]
+        try? launchctl.run()
+        launchctl.waitUntilExit()
+        cleanup()
+        exit(0)
+    }
+}
+
 // MARK: - Logging (thread-safe)
 
 private let logQueue = DispatchQueue(label: "voxa.log")
-private let logPath = tmpDir + "/voxad.log"
+let logPath = tmpDir + "/voxad.log"
 
 func log(_ message: String) {
     let msg = "voxa: \(message)\n"
